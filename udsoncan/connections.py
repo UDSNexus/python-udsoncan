@@ -190,6 +190,7 @@ class SocketConnection(BaseConnection):
     rxthread: Optional[threading.Thread]
     sock: socket.socket
     bufsize: int
+    started_event:threading.Event
 
     def __init__(self, sock: socket.socket, bufsize: int = 4095, name: Optional[str] = None):
         BaseConnection.__init__(self, name)
@@ -200,13 +201,20 @@ class SocketConnection(BaseConnection):
         self.rxthread = None
         self.sock = sock
         self.bufsize = bufsize
+        self.started_event = threading.Event()
 
     def open(self) -> "SocketConnection":
         self.exit_requested = False
+        self.started_event.clear()
         self.rxthread = threading.Thread(target=self.rxthread_task, daemon=True)
         self.rxthread.start()
         self.opened = True
-        self.logger.info('Connection opened')
+        self.started_event.wait(1)
+        if not self.started_event.is_set():
+            self.logger.error("Failed to open connection. Thread didn't start")
+            self.close()
+        else:
+            self.logger.info('Connection opened')
         return self
 
     def __enter__(self):
@@ -219,6 +227,7 @@ class SocketConnection(BaseConnection):
         return self.opened
 
     def rxthread_task(self) -> None:
+        self.started_event.set()
         sel = selectors.DefaultSelector()
         sel.register(self.sock, selectors.EVENT_READ)
         while not self.exit_requested:
@@ -234,7 +243,8 @@ class SocketConnection(BaseConnection):
     def close(self) -> None:
         self.exit_requested = True
         if self.rxthread is not None:
-            self.rxthread.join()
+            if self.rxthread.is_alive():
+                self.rxthread.join()
         self.opened = False
         self.logger.info('Connection closed')
 
@@ -284,6 +294,7 @@ class IsoTPSocketConnection(BaseConnection):
     rxqueue: "queue.Queue[bytes]"
     exit_requested: bool
     opened: bool
+    started_event:threading.Event
 
     def __init__(self,
                  interface: str,
@@ -300,6 +311,7 @@ class IsoTPSocketConnection(BaseConnection):
         self.rxqueue = queue.Queue()
         self.exit_requested = False
         self.opened = False
+        self.started_event=threading.Event()
 
         # Lives with the past.
         if 'txid' in kwargs or 'rxid' in kwargs:
@@ -319,10 +331,16 @@ class IsoTPSocketConnection(BaseConnection):
     def open(self) -> "IsoTPSocketConnection":
         self.tpsock.bind(self.interface, address=self.address)
         self.exit_requested = False
+        self.started_event.clear()
         self.rxthread = threading.Thread(target=self.rxthread_task, daemon=True)
         self.rxthread.start()
         self.opened = True
-        self.logger.info('Connection opened')
+        self.started_event.wait(1)
+        if not self.started_event.is_set():
+            self.logger.error("Failed to open connection. Thread didn't start")
+            self.close()
+        else:
+            self.logger.info('Connection opened')
         return self
 
     def __enter__(self) -> "IsoTPSocketConnection":
@@ -335,6 +353,7 @@ class IsoTPSocketConnection(BaseConnection):
         return self.tpsock.bound
 
     def rxthread_task(self) -> None:
+        self.started_event.set()
         sel = selectors.DefaultSelector()
         sel.register(self.tpsock._socket, selectors.EVENT_READ)
         while not self.exit_requested:
@@ -350,7 +369,8 @@ class IsoTPSocketConnection(BaseConnection):
     def close(self) -> None:
         self.exit_requested = True
         if self.rxthread is not None:
-            self.rxthread.join()
+            if self.rxthread.is_alive():
+                self.rxthread.join()
         self.tpsock.close()
         self.opened = False
         self.logger.info('Connection closed')
@@ -602,6 +622,7 @@ class PythonIsoTpV1Connection(BaseConnection):
     exit_requested: bool
     opened: bool
     isotp_layer: "isotp.TransportLayerLogic"
+    started_event:threading.Event
 
     def __init__(self, isotp_layer: "isotp.TransportLayerLogic", name: Optional[str] = None):
         BaseConnection.__init__(self, name)
@@ -611,6 +632,7 @@ class PythonIsoTpV1Connection(BaseConnection):
         self.exit_requested = False
         self.opened = False
         self.isotp_layer = isotp_layer
+        self.started_event=threading.Event()
 
         # isotp v1 TransportLayer == isotpv2.TransportLayerLogic
         if hasattr(isotp, 'TransportLayerLogic'):
@@ -620,10 +642,16 @@ class PythonIsoTpV1Connection(BaseConnection):
 
     def open(self) -> "PythonIsoTpV1Connection":
         self.exit_requested = False
+        self.started_event.clear()
         self.rxthread = threading.Thread(target=self.rxthread_task, daemon=True)
         self.rxthread.start()
         self.opened = True
-        self.logger.info('Connection opened')
+        self.started_event.wait(1)
+        if not self.started_event.is_set():
+            self.logger.error("Failed to open connection. Thread didn't start")
+            self.close()
+        else:
+            self.logger.info('Connection opened')
         return self
 
     def __enter__(self) -> "PythonIsoTpV1Connection":
@@ -640,7 +668,8 @@ class PythonIsoTpV1Connection(BaseConnection):
         self.empty_txqueue()
         self.exit_requested = True
         if self.rxthread is not None:
-            self.rxthread.join()
+            if self.rxthread.is_alive():
+                self.rxthread.join()
         self.isotp_layer.reset()
         self.opened = False
         self.logger.info('Connection closed')
@@ -677,6 +706,7 @@ class PythonIsoTpV1Connection(BaseConnection):
             self.toIsoTPQueue.get()
 
     def rxthread_task(self) -> None:
+        self.started_event.set()
         while not self.exit_requested:
             try:
                 while not self.toIsoTPQueue.empty():
@@ -726,6 +756,7 @@ class J2534Connection(BaseConnection):
     rxqueue: "queue.Queue[bytes]"
     exit_requested: bool
     opened: bool
+    started_event: threading.Event
 
     def __init__(self, windll: str, rxid: int, txid: int, name: Optional[str] = None, debug: bool = False, *args, **kwargs):
 
@@ -786,13 +817,20 @@ class J2534Connection(BaseConnection):
         self.rxqueue = queue.Queue()
         self.exit_requested = False
         self.opened = False
+        self.started_event = threading.Event()
 
     def open(self) -> "J2534Connection":
         self.exit_requested = False
+        self.started_event.clear()
         self.rxthread = threading.Thread(target=self.rxthread_task, daemon=True)
         self.rxthread.start()
         self.opened = True
-        self.logger.info('J2534 Connection opened')
+        self.started_event.wait(1)
+        if not self.started_event.is_set():
+            self.logger.error("Failed to open connection. Thread didn't start")
+            self.close()
+        else:
+            self.logger.info('J2534 Connection opened')
         return self
 
     def __enter__(self) -> "J2534Connection":
@@ -805,7 +843,7 @@ class J2534Connection(BaseConnection):
         return self.opened
 
     def rxthread_task(self) -> None:
-
+        self.started_event.set()
         while not self.exit_requested:
             try:
                 result, data, numMessages = self.interface.PassThruReadMsgs(self.channelID, self.protocol.value, 1, 1)
@@ -825,7 +863,9 @@ class J2534Connection(BaseConnection):
 
     def close(self) -> None:
         self.exit_requested = True
-        self.rxthread.join()
+        if self.rxthread is not None:
+            if self.rxthread.is_alive():
+                self.rxthread.join()
         self.result = self.interface.PassThruDisconnect(self.channelID)
         self.opened = False
         self.log_last_operation("Connection closed")
